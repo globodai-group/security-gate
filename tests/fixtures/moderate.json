@@ -1,0 +1,13 @@
+{
+  "results": [{
+    "source": {"path": "package-lock.json", "type": "lockfile"},
+    "packages": [{
+      "package": {"name": "moderate-package", "version": "1.0.0", "ecosystem": "npm"},
+      "vulnerabilities": [{
+        "id": "GHSA-moderate-0001",
+        "summary": "Moderate test advisory",
+        "database_specific": {"severity": "MODERATE"}
+      }]
+    }]
+  }]
+}

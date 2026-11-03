@@ -1,0 +1,14 @@
+{
+  "results": [{
+    "source": {"path": "package-lock.json", "type": "lockfile"},
+    "packages": [{
+      "package": {"name": "unfixed-package", "version": "1.0.0", "ecosystem": "npm"},
+      "vulnerabilities": [{
+        "id": "GHSA-unfixed-0001",
+        "summary": "Unfixed high test advisory",
+        "database_specific": {"severity": "HIGH"},
+        "affected": [{"package": {"name": "unfixed-package", "ecosystem": "npm"}, "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}]}]}]
+      }]
+    }]
+  }]
+}

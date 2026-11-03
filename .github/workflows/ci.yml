@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, rec, main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - name: Run unit tests
+        run: timeout 600 uv run --with pyyaml python3 -m unittest discover -s tests -v
+      - name: Verify clean lockfile passes
+        uses: ./
+        with:
+          mode: deps
+          path: tests/e2e/clean
+      - name: Verify moderate lockfile passes
+        uses: ./
+        with:
+          mode: deps
+          path: tests/e2e/moderate
+      - name: Verify vulnerable lockfile fails
+        id: vulnerable
+        continue-on-error: true
+        uses: ./
+        with:
+          mode: deps
+          path: tests/e2e/vulnerable
+      - name: Assert vulnerable lockfile was blocked
+        if: ${{ always() }}
+        run: |
+          if [ "${{ steps.vulnerable.outcome }}" != "failure" ] || \
+             [[ "${{ steps.vulnerable.outputs.verdict }}" != *"GHSA-35jh-r3h4-6jhm"* ]]; then
+            echo "Gate did not block lodash advisory GHSA-35jh-r3h4-6jhm" >&2
+            exit 1
+          fi
