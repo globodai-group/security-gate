@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 BLOCKING_SEVERITIES = {"CRITICAL", "HIGH"}
+SCANNER_SEVERITIES = {"CRITICAL", "HIGH", "MODERATE", "LOW"}
 OSV_VULNERABILITY_URL = "https://api.osv.dev/v1/vulns/"
 
 
@@ -39,8 +40,8 @@ def scanner_severity(vulnerability):
     database_specific = vulnerability.get("database_specific", {})
     if not isinstance(database_specific, dict):
         return ""
-    value = database_specific.get("severity", "")
-    return str(value).upper()
+    value = str(database_specific.get("severity", "")).upper()
+    return value if value in SCANNER_SEVERITIES else ""
 
 
 def severity(vulnerability):
@@ -148,12 +149,24 @@ def parse_ignore_config(path):
         if current is None or not match:
             raise GateError("invalid ignore configuration at %s:%d" % (path, line_number))
         key, value = match.groups()
+        if key not in {"id", "reason", "until"}:
+            raise GateError("unknown ignore field %s at %s:%d" % (key, path, line_number))
         if key in current:
             raise GateError("duplicate ignore field %s at %s:%d" % (key, path, line_number))
         current[key] = parse_toml_string(value, path, line_number)
     if current is not None:
         entries.append(current)
     return entries
+
+
+def resolve_ignore_config(path, workspace):
+    try:
+        workspace_path = Path(workspace).resolve()
+        config_path = Path(path).resolve()
+        config_path.relative_to(workspace_path)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise GateError("ignore config %s must resolve inside workspace %s" % (path, workspace)) from error
+    return config_path
 
 
 def load_ignores(path, today=None, warn=None):
@@ -165,6 +178,8 @@ def load_ignores(path, today=None, warn=None):
         missing = [field for field in ("id", "reason", "until") if not entry.get(field)]
         if missing:
             raise GateError("ignore at %s:%d missing %s" % (path, line, ", ".join(missing)))
+        if entry["id"].startswith("MAL-"):
+            raise GateError("MAL advisories cannot be ignored")
         try:
             until = date.fromisoformat(entry["until"])
         except ValueError as error:
@@ -243,13 +258,14 @@ def evaluate_scan(scan, ignores, fetch_advisory=advisory_from_osv):
                 raise GateError("OSV query returned invalid data for %s" % identifier)
             advisory = fetched
         finding_identifiers = identifiers_for(vulnerability) | identifiers_for(advisory)
-        ignored = next((rule for rule in ignores if rule["id"] in finding_identifiers), None)
+        malicious = any(identifier.startswith("MAL-") for identifier in finding_identifiers)
+        ignored = None if malicious else next((rule for rule in ignores if rule["id"] in finding_identifiers), None)
         name = str(package.get("name", "unknown"))
         ecosystem = str(package.get("ecosystem", ""))
         installed = str(package.get("version", package_record.get("version", "unknown")))
         summary = str(advisory.get("summary") or vulnerability.get("summary") or "No summary")
         finding = {
-            "severity": severity(advisory),
+            "severity": "CRITICAL" if malicious else severity(advisory),
             "id": canonical_id(advisory),
             "package": name,
             "installed": installed,
@@ -338,12 +354,16 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, help="osv-scanner JSON output")
     parser.add_argument("--config", required=True, help="optional ignore TOML file")
+    parser.add_argument("--workspace", required=True, help="repository workspace")
+    parser.add_argument("--scanner-status", type=int, choices=(0, 1), default=0, help="osv-scanner exit status")
     args = parser.parse_args(argv)
     try:
         with open(args.input, encoding="utf-8") as source:
             scan = json.load(source)
-        ignores = load_ignores(args.config)
+        ignores = load_ignores(resolve_ignore_config(args.config, args.workspace))
         findings = evaluate_scan(scan, ignores)
+        if args.scanner_status == 1 and not findings:
+            raise GateError("osv-scanner reported vulnerabilities but security-gate evaluated no advisories")
         write_summary(os.environ.get("GITHUB_STEP_SUMMARY"), findings)
         status = 1 if emit_annotations(findings) else 0
         write_verdict(os.environ.get("GITHUB_OUTPUT"), findings, status)

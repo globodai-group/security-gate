@@ -37,11 +37,16 @@ runs:
         scanner_sha256='160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b'
         scanner="$RUNNER_TEMP/osv-scanner-${scanner_version}-linux-amd64"
         scanner_url="https://github.com/google/osv-scanner/releases/download/${scanner_version}/osv-scanner_linux_amd64"
+        scanner_config="$(mktemp "$RUNNER_TEMP/security-gate-osv-config.XXXXXX.toml")"
         scan_output="$(mktemp "$RUNNER_TEMP/security-gate.XXXXXX.json")"
-        trap 'rm -f "$scan_output"' EXIT
+        trap 'rm -f "$scanner_config" "$scan_output"' EXIT
+        # osv-scanner v2.7.0 --config overrides discovered osv-scanner.toml files;
+        # scan source --no-ignore includes .gitignore paths:
+        # https://github.com/google/osv-scanner/blob/v2.7.0/docs/configuration.md
+        # https://github.com/google/osv-scanner/blob/v2.7.0/docs/scan-source.md
         case "$GATE_MODE" in
           deps)
-            scan_args=(scan source -r "$GATE_PATH" --format json)
+            scan_args=(scan source -r "$GATE_PATH" --format json --config "$scanner_config" --no-ignore)
             scan_target="$GATE_PATH"
             ;;
           image)
@@ -49,7 +54,7 @@ runs:
               echo '::error::input image is required when mode is image' >&2
               exit 2
             fi
-            scan_args=(scan image "$GATE_IMAGE" --format json)
+            scan_args=(scan image "$GATE_IMAGE" --format json --config "$scanner_config")
             scan_target="$GATE_IMAGE"
             ;;
           *)
@@ -85,4 +90,4 @@ runs:
             exit "$scanner_status"
             ;;
         esac
-        python3 "$GITHUB_ACTION_PATH/gate.py" --input "$scan_output" --config "$GITHUB_WORKSPACE/$GATE_CONFIG"
+        python3 "$GITHUB_ACTION_PATH/gate.py" --input "$scan_output" --config "$GITHUB_WORKSPACE/$GATE_CONFIG" --workspace "$GITHUB_WORKSPACE" --scanner-status "$scanner_status"

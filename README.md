@@ -38,7 +38,8 @@ bundled in the image. `image` is required in this mode.
 `.security-gate.toml` is optional and resolved from repository root. Every
 ignore needs all fields. Expired ignores warn and no longer apply; an expiry
 more than 90 days ahead is rejected. Unfixed `HIGH` and `CRITICAL` findings
-still block unless covered by a current documented ignore.
+still block unless covered by a current documented ignore. `MAL-*` advisories
+cannot be ignored and always block; remove the malicious package.
 
 ```toml
 [[ignore]]
