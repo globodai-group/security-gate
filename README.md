@@ -31,7 +31,13 @@ For a built local Docker image:
 ```
 
 `image` mode runs `osv-scanner scan image`, covering OS packages and software
-bundled in the image. `image` is required in this mode.
+bundled in the image. `image` is required in this mode. osv-scanner v2.7.0
+reads npm packages in an image only from `node_modules/.package-lock.json`,
+which bun and pnpm never write, so the Action also streams `docker export` of
+the image, lists every `node_modules/<name>/package.json` (scoped and nested
+included), and gates them as a synthesized npm lockfile. The log line
+`security-gate: listed N npm packages` shows how many were found; an image
+without `node_modules` skips this scan.
 
 ## Temporary exceptions
 
