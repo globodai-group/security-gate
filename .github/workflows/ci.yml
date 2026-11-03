@@ -19,6 +19,11 @@ jobs:
         with:
           mode: deps
           path: tests/e2e/clean
+      - name: Verify moderate lockfile passes
+        uses: ./
+        with:
+          mode: deps
+          path: tests/e2e/moderate
       - name: Verify vulnerable lockfile fails
         id: vulnerable
         continue-on-error: true
@@ -29,7 +34,8 @@ jobs:
       - name: Assert vulnerable lockfile was blocked
         if: ${{ always() }}
         run: |
-          if [ "${{ steps.vulnerable.outcome }}" != "failure" ]; then
-            echo "Vulnerable lockfile was not blocked" >&2
+          if [ "${{ steps.vulnerable.outcome }}" != "failure" ] || \
+             [[ "${{ steps.vulnerable.outputs.verdict }}" != *"GHSA-35jh-r3h4-6jhm"* ]]; then
+            echo "Gate did not block lodash advisory GHSA-35jh-r3h4-6jhm" >&2
             exit 1
           fi

@@ -21,6 +21,7 @@ class GateTests(unittest.TestCase):
         metadata = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
         self.assertIn("inputs", metadata)
         self.assertTrue({"mode", "path", "image", "config"}.issubset(metadata["inputs"]))
+        self.assertIn("verdict", metadata["outputs"])
 
     def scan(self, name):
         return json.loads((FIXTURES / (name + ".json")).read_text(encoding="utf-8"))
@@ -108,6 +109,15 @@ class GateTests(unittest.TestCase):
             gate.write_summary(summary, findings)
             content = summary.read_text(encoding="utf-8")
         self.assertIn("non-blocking", content)
+        self.assertIn("GHSA-moderate-0001", content)
+
+    def test_verdict_lists_advisory_ids(self):
+        findings, _ = self.evaluate("moderate")
+        with tempfile.TemporaryDirectory() as directory:
+            verdict = Path(directory) / "verdict"
+            gate.write_verdict(verdict, findings, 0)
+            content = verdict.read_text(encoding="utf-8")
+        self.assertIn("gate exit 0", content)
         self.assertIn("GHSA-moderate-0001", content)
 
 

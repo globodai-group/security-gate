@@ -299,6 +299,17 @@ def write_summary(path, findings):
         raise GateError("cannot write step summary: %s" % error) from error
 
 
+def write_verdict(path, findings, status):
+    if not path:
+        return
+    advisory_ids = ",".join(sorted({finding["id"] for finding in findings}))
+    try:
+        with open(path, "a", encoding="utf-8") as output:
+            output.write("verdict=gate exit %s; advisory IDs: %s\n" % (status, advisory_ids))
+    except OSError as error:
+        raise GateError("cannot write gate verdict: %s" % error) from error
+
+
 def annotation_escape(value):
     return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
@@ -334,7 +345,9 @@ def main(argv=None):
         ignores = load_ignores(args.config)
         findings = evaluate_scan(scan, ignores)
         write_summary(os.environ.get("GITHUB_STEP_SUMMARY"), findings)
-        return 1 if emit_annotations(findings) else 0
+        status = 1 if emit_annotations(findings) else 0
+        write_verdict(os.environ.get("GITHUB_OUTPUT"), findings, status)
+        return status
     except (OSError, json.JSONDecodeError, GateError) as error:
         print("::error::security-gate failed: %s" % annotation_escape(error), file=sys.stderr)
         return 2
