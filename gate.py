@@ -275,10 +275,11 @@ def evaluate_scan(scan, ignores, fetch_advisory=advisory_from_osv):
             "ignored": ignored,
         }
         findings.append(finding)
-    return sorted(
-        findings,
-        key=lambda item: (item["severity"] not in BLOCKING_SEVERITIES, item["severity"] != "CRITICAL", item["id"], item["package"], item["location"]),
-    )
+    return sorted(findings, key=finding_order)
+
+
+def finding_order(item):
+    return (item["severity"] not in BLOCKING_SEVERITIES, item["severity"] != "CRITICAL", item["id"], item["package"], item["location"])
 
 
 def markdown_cell(value):
@@ -352,18 +353,27 @@ def emit_annotations(findings):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, help="osv-scanner JSON output")
+    parser.add_argument("--input", required=True, action="append", help="osv-scanner JSON output; repeat for several scans")
     parser.add_argument("--config", required=True, help="optional ignore TOML file")
     parser.add_argument("--workspace", required=True, help="repository workspace")
-    parser.add_argument("--scanner-status", type=int, choices=(0, 1), default=0, help="osv-scanner exit status")
+    parser.add_argument(
+        "--scanner-status", type=int, choices=(0, 1), action="append", help="osv-scanner exit status, one per --input in order"
+    )
     args = parser.parse_args(argv)
+    statuses = args.scanner_status or [0] * len(args.input)
     try:
-        with open(args.input, encoding="utf-8") as source:
-            scan = json.load(source)
+        if len(statuses) != len(args.input):
+            raise GateError("pass one --scanner-status per --input")
         ignores = load_ignores(resolve_ignore_config(args.config, args.workspace))
-        findings = evaluate_scan(scan, ignores)
-        if args.scanner_status == 1 and not findings:
-            raise GateError("osv-scanner reported vulnerabilities but security-gate evaluated no advisories")
+        findings = []
+        for path, scanner_status in zip(args.input, statuses):
+            with open(path, encoding="utf-8") as source:
+                scan = json.load(source)
+            scan_findings = evaluate_scan(scan, ignores)
+            if scanner_status == 1 and not scan_findings:
+                raise GateError("osv-scanner reported vulnerabilities but security-gate evaluated no advisories")
+            findings.extend(scan_findings)
+        findings.sort(key=finding_order)
         write_summary(os.environ.get("GITHUB_STEP_SUMMARY"), findings)
         status = 1 if emit_annotations(findings) else 0
         write_verdict(os.environ.get("GITHUB_OUTPUT"), findings, status)

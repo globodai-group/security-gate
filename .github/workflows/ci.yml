@@ -41,3 +41,20 @@ jobs:
             echo "Gate did not block lodash advisory GHSA-35jh-r3h4-6jhm" >&2
             exit 1
           fi
+      - name: Build bun-style image without npm hidden lockfile
+        run: timeout 600 docker build -t local/security-gate-e2e:image tests/e2e/image
+      - name: Verify npm packages in an image are gated
+        id: image
+        continue-on-error: true
+        uses: ./
+        with:
+          mode: image
+          image: local/security-gate-e2e:image
+      - name: Assert image npm package was blocked
+        if: ${{ always() }}
+        run: |
+          if [ "${{ steps.image.outcome }}" != "failure" ] || \
+             [[ "${{ steps.image.outputs.verdict }}" != *"GHSA-35jh-r3h4-6jhm"* ]]; then
+            echo "Gate did not block lodash advisory GHSA-35jh-r3h4-6jhm in image node_modules" >&2
+            exit 1
+          fi
