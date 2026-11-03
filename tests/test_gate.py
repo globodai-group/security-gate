@@ -1,0 +1,233 @@
+import json
+import tempfile
+import unittest
+from contextlib import redirect_stderr
+from datetime import date, timedelta
+from io import StringIO
+from pathlib import Path
+
+import yaml
+
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import gate
+
+
+FIXTURES = Path(__file__).with_name("fixtures")
+ACTION = Path(__file__).resolve().parents[1] / "action.yml"
+
+
+class GateTests(unittest.TestCase):
+    def test_action_metadata_parses_and_declares_inputs(self):
+        metadata = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
+        self.assertIn("inputs", metadata)
+        self.assertTrue({"mode", "path", "image", "config"}.issubset(metadata["inputs"]))
+        self.assertIn("verdict", metadata["outputs"])
+
+    def test_action_forces_scanner_config_and_status_check(self):
+        action = ACTION.read_text(encoding="utf-8")
+        self.assertIn('scanner_config="$(mktemp "$RUNNER_TEMP/security-gate-osv-config.XXXXXX.toml")"', action)
+        self.assertIn('scan source -r "$GATE_PATH" --format json --config "$scanner_config" --no-ignore', action)
+        self.assertIn('scan image "$GATE_IMAGE" --format json --config "$scanner_config"', action)
+        self.assertIn('--scanner-status "$scanner_status"', action)
+
+    def scan(self, name):
+        return json.loads((FIXTURES / (name + ".json")).read_text(encoding="utf-8"))
+
+    def evaluate(self, name, config="", today=date(2026, 11, 3)):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / ".security-gate.toml"
+            config_path.write_text(config, encoding="utf-8")
+            warnings = []
+            ignores = gate.load_ignores(config_path, today=today, warn=warnings.append)
+            findings = gate.evaluate_scan(self.scan(name), ignores)
+        return findings, warnings
+
+    def assert_blocks(self, name):
+        findings, _ = self.evaluate(name)
+        self.assertEqual(1, len(gate.emit_annotations(findings)))
+
+    def test_critical_blocks(self):
+        self.assert_blocks("critical")
+
+    def test_high_blocks(self):
+        self.assert_blocks("high")
+
+    def test_moderate_passes(self):
+        findings, _ = self.evaluate("moderate")
+        self.assertEqual([], gate.emit_annotations(findings))
+
+    def test_malware_blocks(self):
+        self.assert_blocks("malware")
+
+    def test_ignored_finding_passes(self):
+        findings, _ = self.evaluate(
+            "high",
+            '[[ignore]]\nid = "GHSA-high-0001"\nreason = "Not reachable in this service"\nuntil = "2026-11-10"\n',
+        )
+        self.assertEqual([], gate.emit_annotations(findings))
+        self.assertIsNotNone(findings[0]["ignored"])
+
+    def test_expired_ignore_blocks(self):
+        findings, warnings = self.evaluate(
+            "high",
+            '[[ignore]]\nid = "GHSA-high-0001"\nreason = "Temporary exception"\nuntil = "2026-11-02"\n',
+        )
+        self.assertEqual(1, len(gate.emit_annotations(findings)))
+        self.assertEqual(["Ignore GHSA-high-0001 expired on 2026-11-02 and no longer applies"], warnings)
+
+    def test_ignore_missing_reason_errors(self):
+        with self.assertRaisesRegex(gate.GateError, "missing reason"):
+            self.evaluate("high", '[[ignore]]\nid = "GHSA-high-0001"\nuntil = "2026-11-10"\n')
+
+    def test_ignore_more_than_ninety_days_ahead_errors(self):
+        with self.assertRaisesRegex(gate.GateError, "more than 90 days"):
+            self.evaluate(
+                "high",
+                '[[ignore]]\nid = "GHSA-high-0001"\nreason = "Temporary exception"\nuntil = "2027-02-02"\n',
+            )
+
+    def test_ignore_unknown_field_errors_with_location(self):
+        with self.assertRaisesRegex(gate.GateError, r"unknown ignore field package at .+:5"):
+            self.evaluate(
+                "high",
+                '[[ignore]]\nid = "GHSA-high-0001"\nreason = "Temporary exception"\nuntil = "2026-11-10"\npackage = "high-package"\n',
+            )
+
+    def test_unfixed_high_blocks(self):
+        findings, _ = self.evaluate("unfixed-high")
+        self.assertEqual("none", findings[0]["fixed"])
+        self.assertEqual(1, len(gate.emit_annotations(findings)))
+
+    def test_empty_scan_passes(self):
+        findings, _ = self.evaluate("empty")
+        self.assertEqual([], findings)
+        self.assertEqual([], gate.emit_annotations(findings))
+
+    def test_missing_scanner_severity_fetches_once(self):
+        scan = self.scan("missing-severity")
+        fetched = self.scan("high")["results"][0]["packages"][0]["vulnerabilities"][0]
+        calls = []
+
+        def fetch(identifier):
+            calls.append(identifier)
+            return fetched
+
+        findings = gate.evaluate_scan(scan, [], fetch_advisory=fetch)
+        self.assertEqual(["GHSA-fetch-0001"], calls)
+        self.assertEqual("HIGH", findings[0]["severity"])
+
+    def test_invalid_scanner_severity_fetches_advisory(self):
+        fetched = self.scan("high")["results"][0]["packages"][0]["vulnerabilities"][0]
+        for scanner_value in (None, "", "NONE"):
+            with self.subTest(scanner_value=scanner_value):
+                scan = self.scan("missing-severity")
+                scan["results"][0]["packages"][0]["vulnerabilities"][0]["database_specific"] = {"severity": scanner_value}
+                calls = []
+
+                def fetch(identifier):
+                    calls.append(identifier)
+                    return fetched
+
+                findings = gate.evaluate_scan(scan, [], fetch_advisory=fetch)
+                self.assertEqual(["GHSA-fetch-0001"], calls)
+                self.assertEqual("HIGH", findings[0]["severity"])
+
+    def test_missing_scanner_severity_fetches_ghsa_alias(self):
+        scan = {
+            "results": [{
+                "source": {"path": "requirements.txt", "type": "lockfile"},
+                "packages": [{
+                    "package": {"name": "py-package", "version": "1.0.0", "ecosystem": "PyPI"},
+                    "vulnerabilities": [{
+                        "id": "PYSEC-2026-0001",
+                        "aliases": ["GHSA-pysec-0001"],
+                    }],
+                }],
+            }],
+        }
+        calls = []
+
+        def fetch(identifier):
+            calls.append(identifier)
+            if identifier == "GHSA-pysec-0001":
+                return {"id": identifier, "database_specific": {"severity": "HIGH"}}
+            return {"id": identifier}
+
+        findings = gate.evaluate_scan(scan, [], fetch_advisory=fetch)
+        self.assertEqual(["GHSA-pysec-0001"], calls)
+        self.assertEqual("HIGH", findings[0]["severity"])
+        self.assertEqual(1, len(gate.emit_annotations(findings)))
+
+    def test_malware_ignore_is_rejected(self):
+        with self.assertRaisesRegex(gate.GateError, "MAL advisories cannot be ignored"):
+            self.evaluate(
+                "malware",
+                '[[ignore]]\nid = "MAL-2026-0001"\nreason = "Temporary exception"\nuntil = "2026-11-10"\n',
+            )
+
+    def test_malware_alias_cannot_be_ignored(self):
+        scan = self.scan("high")
+        scan["results"][0]["packages"][0]["vulnerabilities"][0]["aliases"] = ["MAL-2026-0001"]
+        ignores = [{"id": "GHSA-high-0001", "reason": "Temporary exception", "until": date(2026, 11, 10)}]
+        findings = gate.evaluate_scan(scan, ignores)
+        self.assertEqual("CRITICAL", findings[0]["severity"])
+        self.assertIsNone(findings[0]["ignored"])
+        self.assertEqual(1, len(gate.emit_annotations(findings)))
+
+    def test_resolve_ignore_config_rejects_symlink_outside_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            outside = root / "outside.toml"
+            outside.write_text("", encoding="utf-8")
+            config = workspace / ".security-gate.toml"
+            config.symlink_to(outside)
+            with self.assertRaisesRegex(gate.GateError, "must resolve inside workspace"):
+                gate.resolve_ignore_config(config, workspace)
+
+    def test_missing_ignore_config_inside_workspace_is_allowed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            config = gate.resolve_ignore_config(workspace / ".security-gate.toml", workspace)
+            self.assertEqual([], gate.load_ignores(config))
+
+    def test_scanner_status_with_no_evaluated_advisories_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            config = workspace / ".security-gate.toml"
+            config.write_text("", encoding="utf-8")
+            errors = StringIO()
+            with redirect_stderr(errors):
+                status = gate.main([
+                    "--input", str(FIXTURES / "empty.json"),
+                    "--config", str(config),
+                    "--workspace", str(workspace),
+                    "--scanner-status", "1",
+                ])
+        self.assertEqual(2, status)
+        self.assertIn("::error::security-gate failed: osv-scanner reported vulnerabilities", errors.getvalue())
+
+    def test_summary_lists_non_blocking_and_ignored(self):
+        findings, _ = self.evaluate("moderate")
+        with tempfile.TemporaryDirectory() as directory:
+            summary = Path(directory) / "summary.md"
+            gate.write_summary(summary, findings)
+            content = summary.read_text(encoding="utf-8")
+        self.assertIn("non-blocking", content)
+        self.assertIn("GHSA-moderate-0001", content)
+
+    def test_verdict_lists_advisory_ids(self):
+        findings, _ = self.evaluate("moderate")
+        with tempfile.TemporaryDirectory() as directory:
+            verdict = Path(directory) / "verdict"
+            gate.write_verdict(verdict, findings, 0)
+            content = verdict.read_text(encoding="utf-8")
+        self.assertIn("gate exit 0", content)
+        self.assertIn("GHSA-moderate-0001", content)
+
+
+if __name__ == "__main__":
+    unittest.main()

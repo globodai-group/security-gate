@@ -1,0 +1,14 @@
+{
+  "results": [{
+    "source": {"path": "package-lock.json", "type": "lockfile"},
+    "packages": [{
+      "package": {"name": "high-package", "version": "1.0.0", "ecosystem": "npm"},
+      "vulnerabilities": [{
+        "id": "GHSA-high-0001",
+        "summary": "High test advisory",
+        "database_specific": {"severity": "HIGH"},
+        "affected": [{"package": {"name": "high-package", "ecosystem": "npm"}, "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.0.1"}]}]}]
+      }]
+    }]
+  }]
+}
