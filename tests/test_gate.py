@@ -102,6 +102,32 @@ class GateTests(unittest.TestCase):
         self.assertEqual(["GHSA-fetch-0001"], calls)
         self.assertEqual("HIGH", findings[0]["severity"])
 
+    def test_missing_scanner_severity_fetches_ghsa_alias(self):
+        scan = {
+            "results": [{
+                "source": {"path": "requirements.txt", "type": "lockfile"},
+                "packages": [{
+                    "package": {"name": "py-package", "version": "1.0.0", "ecosystem": "PyPI"},
+                    "vulnerabilities": [{
+                        "id": "PYSEC-2026-0001",
+                        "aliases": ["GHSA-pysec-0001"],
+                    }],
+                }],
+            }],
+        }
+        calls = []
+
+        def fetch(identifier):
+            calls.append(identifier)
+            if identifier == "GHSA-pysec-0001":
+                return {"id": identifier, "database_specific": {"severity": "HIGH"}}
+            return {"id": identifier}
+
+        findings = gate.evaluate_scan(scan, [], fetch_advisory=fetch)
+        self.assertEqual(["GHSA-pysec-0001"], calls)
+        self.assertEqual("HIGH", findings[0]["severity"])
+        self.assertEqual(1, len(gate.emit_annotations(findings)))
+
     def test_summary_lists_non_blocking_and_ignored(self):
         findings, _ = self.evaluate("moderate")
         with tempfile.TemporaryDirectory() as directory:

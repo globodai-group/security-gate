@@ -234,7 +234,7 @@ def evaluate_scan(scan, ignores, fetch_advisory=advisory_from_osv):
     findings = []
     for result, package_record, package, vulnerability in scan_packages(scan):
         advisory = vulnerability
-        identifier = str(vulnerability["id"])
+        identifier = canonical_id(vulnerability)
         if not scanner_severity(vulnerability):
             if identifier not in cache:
                 cache[identifier] = fetch_advisory(identifier)
