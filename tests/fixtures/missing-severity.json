@@ -1,0 +1,12 @@
+{
+  "results": [{
+    "source": {"path": "package-lock.json", "type": "lockfile"},
+    "packages": [{
+      "package": {"name": "high-package", "version": "1.0.0", "ecosystem": "npm"},
+      "vulnerabilities": [{
+        "id": "GHSA-fetch-0001",
+        "summary": "Scanner omitted severity"
+      }]
+    }]
+  }]
+}
