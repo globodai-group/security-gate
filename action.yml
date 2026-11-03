@@ -1,19 +1,19 @@
 name: Security gate
-description: Block CRITICAL and HIGH OSV advisories before deployment.
+description: "Block CRITICAL and HIGH OSV advisories before deployment."
 inputs:
   mode:
-    description: Scan mode: deps or image.
+    description: "Scan mode: deps or image."
     required: false
     default: deps
   path:
-    description: Directory to scan recursively in deps mode, relative to repository root.
+    description: "Directory to scan recursively in deps mode, relative to repository root."
     required: false
     default: .
   image:
-    description: Built local Docker image reference to scan in image mode.
+    description: "Built local Docker image reference to scan in image mode."
     required: false
   config:
-    description: Ignore file path, relative to repository root.
+    description: "Ignore file path, relative to repository root."
     required: false
     default: .security-gate.toml
 runs:

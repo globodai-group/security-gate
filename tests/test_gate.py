@@ -4,6 +4,8 @@ import unittest
 from datetime import date, timedelta
 from pathlib import Path
 
+import yaml
+
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -11,9 +13,15 @@ import gate
 
 
 FIXTURES = Path(__file__).with_name("fixtures")
+ACTION = Path(__file__).resolve().parents[1] / "action.yml"
 
 
 class GateTests(unittest.TestCase):
+    def test_action_metadata_parses_and_declares_inputs(self):
+        metadata = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
+        self.assertIn("inputs", metadata)
+        self.assertTrue({"mode", "path", "image", "config"}.issubset(metadata["inputs"]))
+
     def scan(self, name):
         return json.loads((FIXTURES / (name + ".json")).read_text(encoding="utf-8"))
 
