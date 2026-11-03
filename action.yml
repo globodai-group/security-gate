@@ -39,7 +39,17 @@ runs:
         scanner_url="https://github.com/google/osv-scanner/releases/download/${scanner_version}/osv-scanner_linux_amd64"
         scanner_config="$(mktemp "$RUNNER_TEMP/security-gate-osv-config.XXXXXX.toml")"
         scan_output="$(mktemp "$RUNNER_TEMP/security-gate.XXXXXX.json")"
-        trap 'rm -f "$scanner_config" "$scan_output"' EXIT
+        npm_dir="$(mktemp -d "$RUNNER_TEMP/security-gate-image-npm.XXXXXX")"
+        npm_output="$(mktemp "$RUNNER_TEMP/security-gate-image-npm.XXXXXX.json")"
+        container=''
+        cleanup() {
+          rm -f "$scanner_config" "$scan_output" "$npm_output" "$npm_dir/package-lock.json"
+          rmdir "$npm_dir"
+          if [ -n "$container" ]; then
+            docker rm -v "$container" > /dev/null || true
+          fi
+        }
+        trap cleanup EXIT
         # osv-scanner v2.7.0 --config overrides discovered osv-scanner.toml files;
         # scan source --no-ignore includes .gitignore paths:
         # https://github.com/google/osv-scanner/blob/v2.7.0/docs/configuration.md
@@ -80,14 +90,40 @@ runs:
         set -e
         case "$scanner_status" in
           0|1)
+            gate_args=(--input "$scan_output" --scanner-status "$scanner_status")
             ;;
           128)
-            echo "::error::osv-scanner found no supported lockfile or package at $scan_target" >&2
-            exit 128
+            gate_args=()
             ;;
           *)
             echo "::error::osv-scanner exited with code $scanner_status" >&2
             exit "$scanner_status"
             ;;
         esac
-        python3 "$GITHUB_ACTION_PATH/gate.py" --input "$scan_output" --config "$GITHUB_WORKSPACE/$GATE_CONFIG" --workspace "$GITHUB_WORKSPACE" --scanner-status "$scanner_status"
+        if [ "$GATE_MODE" = image ]; then
+          # osv-scanner v2.7.0 image mode reads npm packages only from
+          # node_modules/.package-lock.json, which bun and pnpm never write: list every
+          # package installed under node_modules in the image and scan them as a lockfile.
+          container="$(docker create "$GATE_IMAGE" security-gate-export)"
+          docker export "$container" | python3 "$GITHUB_ACTION_PATH/image_npm_lockfile.py" --output "$npm_dir/package-lock.json"
+          if [ -f "$npm_dir/package-lock.json" ]; then
+            set +e
+            "$scanner" scan source -r "$npm_dir" --format json --config "$scanner_config" --no-ignore > "$npm_output"
+            npm_status=$?
+            set -e
+            case "$npm_status" in
+              0|1)
+                gate_args+=(--input "$npm_output" --scanner-status "$npm_status")
+                ;;
+              *)
+                echo "::error::osv-scanner exited with code $npm_status on npm packages installed in the image" >&2
+                exit "$npm_status"
+                ;;
+            esac
+          fi
+        fi
+        if [ "${#gate_args[@]}" -eq 0 ]; then
+          echo "::error::osv-scanner found no supported lockfile or package at $scan_target" >&2
+          exit 128
+        fi
+        python3 "$GITHUB_ACTION_PATH/gate.py" "${gate_args[@]}" --config "$GITHUB_WORKSPACE/$GATE_CONFIG" --workspace "$GITHUB_WORKSPACE"
