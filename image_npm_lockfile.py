@@ -30,25 +30,67 @@ def is_package_manifest(member_name):
     return len(parts) >= 4 and parts[-4] == "node_modules" and parts[-3].startswith("@") and not parts[-2].startswith(".")
 
 
+class ImageStreamError(Exception):
+    """The image filesystem stream is truncated, corrupt, or inconsistent."""
+
+
+def parse_manifest(data):
+    try:
+        manifest = json.loads(data.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError) as error:
+        return None, type(error).__name__
+    if not isinstance(manifest, dict):
+        return None, "not a JSON object"
+    name, version = manifest.get("name"), manifest.get("version")
+    if isinstance(name, str) and isinstance(version, str) and name and version:
+        return (name, version), None
+    return None, None
+
+
+def stored_manifest(archive, member):
+    """Parse a regular file that may be the store copy of a manifest."""
+    if member.size > MAX_MANIFEST_BYTES:
+        return None, "larger than %d bytes" % MAX_MANIFEST_BYTES
+    handle = archive.extractfile(member)
+    head = handle.read(64)
+    if not head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"{"):
+        return None, "not a JSON object"
+    return parse_manifest(head + handle.read())
+
+
 def installed_packages(stream, warn):
     packages = set()
+    # bun and pnpm hardlink node_modules files to their store (pnpm names store
+    # files by content hash), and a tar stream holds each inode once: later
+    # paths are hard links to the first one. Every regular file that can be a
+    # manifest is therefore parsed and kept to resolve those links.
+    regular = {}
     with tarfile.open(fileobj=stream, mode="r|*") as archive:
         for member in archive:
-            if not member.isreg() or not is_package_manifest(member.name):
+            if member.isreg():
+                regular[member.name] = stored_manifest(archive, member)
+                if not is_package_manifest(member.name):
+                    continue
+                package, problem = regular[member.name]
+            elif member.islnk() and is_package_manifest(member.name):
+                if member.linkname not in regular:
+                    raise ImageStreamError("%s links to %s, which is not earlier in the stream" % (member.name, member.linkname))
+                package, problem = regular[member.linkname]
+            else:
                 continue
-            if member.size > MAX_MANIFEST_BYTES:
-                warn("skipped %s: larger than %d bytes" % (member.name, MAX_MANIFEST_BYTES))
-                continue
-            try:
-                manifest = json.loads(archive.extractfile(member).read().decode("utf-8"))
-            except (UnicodeDecodeError, ValueError) as error:
-                warn("skipped %s: %s" % (member.name, type(error).__name__))
-                continue
-            if not isinstance(manifest, dict):
-                continue
-            name, version = manifest.get("name"), manifest.get("version")
-            if isinstance(name, str) and isinstance(version, str) and name and version:
-                packages.add((name, version))
+            if package:
+                packages.add(package)
+            elif problem:
+                warn("skipped %s: %s" % (member.name, problem))
+        # tarfile ends iteration silently at a corrupt header after the first
+        # member, so anything but end-of-archive padding left in the stream means
+        # members were not read.
+        while True:
+            chunk = archive.fileobj.read(1024 * 1024)
+            if not chunk:
+                break
+            if chunk.strip(b"\0"):
+                raise ImageStreamError("unreadable data after the last tar member")
     return sorted(packages)
 
 
@@ -65,15 +107,19 @@ def lockfile(packages):
     return {"name": "image", "version": "0.0.0", "lockfileVersion": 3, "requires": True, "packages": entries}
 
 
+def annotation_escape(value):
+    return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def main(argv=None, stream=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, help="package-lock.json to write when packages are found")
     args = parser.parse_args(argv)
-    warn = lambda message: print("::warning::security-gate image npm: %s" % message)
+    warn = lambda message: print("::warning::security-gate image npm: %s" % annotation_escape(message))
     try:
         packages = installed_packages(stream or sys.stdin.buffer, warn)
-    except (OSError, tarfile.TarError) as error:
-        print("::error::security-gate cannot read the image filesystem: %s" % error, file=sys.stderr)
+    except (OSError, tarfile.TarError, ImageStreamError) as error:
+        print("::error::security-gate cannot read the image filesystem: %s" % annotation_escape(error), file=sys.stderr)
         return 2
     if not packages:
         print("security-gate: no npm package installed under node_modules in the image")

@@ -46,7 +46,7 @@ runs:
           rm -f "$scanner_config" "$scan_output" "$npm_output" "$npm_dir/package-lock.json"
           rmdir "$npm_dir"
           if [ -n "$container" ]; then
-            docker rm "$container" > /dev/null || true
+            docker rm -v "$container" > /dev/null || true
           fi
         }
         trap cleanup EXIT

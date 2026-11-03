@@ -37,7 +37,9 @@ which bun and pnpm never write, so the Action also streams `docker export` of
 the image, lists every `node_modules/<name>/package.json` (scoped and nested
 included), and gates them as a synthesized npm lockfile. The log line
 `security-gate: listed N npm packages` shows how many were found; an image
-without `node_modules` skips this scan.
+without `node_modules` skips this scan. Packages that bun and pnpm hardlink from
+their store are resolved, and npm's own bundled packages in `node` base images
+are gated too. A truncated or corrupt image stream fails the gate.
 
 ## Temporary exceptions
 

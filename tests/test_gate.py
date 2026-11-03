@@ -287,9 +287,9 @@ def image_tar(members):
     with tarfile.open(fileobj=buffer, mode="w") as archive:
         for name, content in members:
             info = tarfile.TarInfo(name)
-            if content is None:
-                info.type = tarfile.SYMTYPE
-                info.linkname = "/etc/passwd"
+            if content is None or content.startswith("hardlink:"):
+                info.type = tarfile.SYMTYPE if content is None else tarfile.LNKTYPE
+                info.linkname = "/etc/passwd" if content is None else content[len("hardlink:"):]
                 archive.addfile(info)
                 continue
             data = content.encode("utf-8")
@@ -322,6 +322,44 @@ class ImageNpmLockfileTests(unittest.TestCase):
             packages,
         )
         self.assertEqual([], warnings)
+
+    def test_hard_linked_manifest_from_the_store_is_listed(self):
+        packages, _ = self.packages([
+            ("root/.bun/install/cache/lodash@4.17.20@@@1/package.json", manifest("lodash", "4.17.20")),
+            ("usr/src/app/node_modules/lodash/package.json", "hardlink:root/.bun/install/cache/lodash@4.17.20@@@1/package.json"),
+        ])
+        self.assertEqual([("lodash", "4.17.20")], packages)
+
+    def test_hard_linked_manifest_from_a_hashed_pnpm_store_is_listed(self):
+        packages, _ = self.packages([
+            ("root/.local/share/pnpm/store/v10/files/3f/0a1b2c", "\ufeff" + manifest("lodash", "4.17.20")),
+            ("usr/src/app/node_modules/.pnpm/lodash@4.17.20/node_modules/lodash/package.json", "hardlink:root/.local/share/pnpm/store/v10/files/3f/0a1b2c"),
+        ])
+        self.assertEqual([("lodash", "4.17.20")], packages)
+
+    def test_hard_link_to_a_missing_member_errors(self):
+        with self.assertRaises(image_npm_lockfile.ImageStreamError):
+            self.packages([("app/node_modules/missing/package.json", "hardlink:nowhere/package.json")])
+
+    def test_corrupt_header_after_first_member_errors(self):
+        stream = image_tar([
+            ("app/node_modules/a/package.json", manifest("a", "1.0.0")),
+            ("app/node_modules/b/package.json", manifest("b", "1.0.0")),
+        ])
+        data = bytearray(stream.getvalue())
+        data[1024 + 148:1024 + 156] = b"0000000\0"
+        with self.assertRaises(image_npm_lockfile.ImageStreamError):
+            image_npm_lockfile.installed_packages(io.BytesIO(bytes(data)), lambda message: None)
+
+    def test_warning_escapes_image_paths(self):
+        output = StringIO()
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(output):
+            image_npm_lockfile.main(
+                ["--output", str(Path(directory) / "package-lock.json")],
+                stream=image_tar([("app/node_modules/x\n::stop-commands::t/package.json", "{")]),
+            )
+        self.assertNotIn("\n::stop-commands::", output.getvalue())
+        self.assertIn("%0A::stop-commands::", output.getvalue())
 
     def test_ignores_non_package_manifests(self):
         packages, _ = self.packages([
