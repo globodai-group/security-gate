@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, rec, main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, linux, x64, ci]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run unit tests
+        run: timeout 600 python3 -m unittest discover -s tests -v
+      - name: Verify clean lockfile passes
+        uses: ./
+        with:
+          mode: deps
+          path: tests/e2e/clean
+      - name: Verify vulnerable lockfile fails
+        id: vulnerable
+        continue-on-error: true
+        uses: ./
+        with:
+          mode: deps
+          path: tests/e2e/vulnerable
+      - name: Assert vulnerable lockfile was blocked
+        if: ${{ always() }}
+        run: |
+          if [ "${{ steps.vulnerable.outcome }}" != "failure" ]; then
+            echo "Vulnerable lockfile was not blocked" >&2
+            exit 1
+          fi
