@@ -31,12 +31,16 @@ runs:
         GATE_PATH: ${{ inputs.path }}
         GATE_IMAGE: ${{ inputs.image }}
         GATE_CONFIG: ${{ inputs.config }}
+        GATE_GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         scanner_version='v2.7.0'
         scanner_sha256='160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b'
         scanner="$RUNNER_TEMP/osv-scanner-${scanner_version}-linux-amd64"
-        scanner_url="https://github.com/google/osv-scanner/releases/download/${scanner_version}/osv-scanner_linux_amd64"
+        # Release asset id of osv-scanner_linux_amd64 for v2.7.0. The API endpoint is used because
+        # github.com/.../releases/download answers 504 to some runner IPs.
+        scanner_asset_id='632251666'
+        scanner_url="https://api.github.com/repos/google/osv-scanner/releases/assets/${scanner_asset_id}"
         scanner_config="$(mktemp "$RUNNER_TEMP/security-gate-osv-config.XXXXXX.toml")"
         scan_output="$(mktemp "$RUNNER_TEMP/security-gate.XXXXXX.json")"
         npm_dir="$(mktemp -d "$RUNNER_TEMP/security-gate-image-npm.XXXXXX")"
@@ -79,7 +83,8 @@ runs:
             ;;
         esac
         cd "$GITHUB_WORKSPACE"
-        curl -fsSL --retry 3 --retry-delay 1 "$scanner_url" -o "$scanner"
+        curl -fsSL --retry 3 --retry-delay 1 -H "Accept: application/octet-stream" \
+          -H "Authorization: Bearer ${GATE_GITHUB_TOKEN}" "$scanner_url" -o "$scanner"
         printf '%s  %s\n' "$scanner_sha256" "$scanner" | sha256sum -c -
         chmod 0755 "$scanner"
         # osv-scanner v2.7.0 maps vulnerabilities to 1, no packages to 128,
